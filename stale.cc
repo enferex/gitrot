@@ -27,11 +27,18 @@ typedef Lines::iterator LinesItr;
 class Line
 {
 public:
+    const string getContent() const { return _content; }
+
     // Parsing utils
     static string getTextLine(FILE *fp);
     static Line *getLine(FILE *fp);
     static bool isBlank(LinesItr &itr);
     static bool hasUnterminatedComment(LinesItr &itr);
+    static size_t findCommentBlockBegin(string str, size_t pos);
+    static size_t findCommentBlockBegin(LinesItr &itr);
+    static size_t findCommentBlockEnd(string str, size_t pos);
+    static size_t findCommentBlockEnd(LinesItr &itr);
+    static unsigned incrLineCounter(void) { return ++Line::_all_line_count; }
 
 private:
     // git help blame 
@@ -48,17 +55,28 @@ private:
     string _prev_or_boundary;
     string _filename;
     string _content;
+    unsigned _lineno;
+    static unsigned _all_line_count;
 
-    friend ostream &operator<<(ostream &os, const Line &tf) {
-        return os << tf._content;
+    friend ostream &operator<<(ostream &os, const Line &line) {
+        return os << line._lineno << line._content;
     }
 };
+
+
+// Global keeping track of line numbers
+unsigned Line::_all_line_count = 0;
 
 class Block
 {
 public:
-    const Lines &getLines(void) const { return _lines; }
+    Block() { _name = "Unknown Block"; }
+    const char *getName() const { return _name; }
+    const Lines &getLines() const { return _lines; }
     void addLine(Line *line) { _lines.push_back(line); }
+
+protected:
+    const char *_name;
 
 private:
     Lines _lines;
@@ -67,14 +85,20 @@ typedef vector<Block *> Blocks;
 
 class BlankBlock : public Block
 {
+public:
+    BlankBlock() { _name = "Blank Block"; }
 };
 
 class CommentBlock : public Block
 {
+public:
+    CommentBlock() { _name = "Comment Block"; }
 };
 
 class CodeBlock : public Block
 {
+public:
+    CodeBlock() { _name = "Code Block"; }
 };
 
 class TranslationFile
@@ -93,8 +117,8 @@ private:
         int cnt = 0;
         for (auto i=tf._blocks.cbegin(); i!=tf._blocks.cend(); ++i) {
              auto lines = (*i)->getLines();
-             os << "==> Block "<< cnt++ << ": ("
-                << lines.size() << " lines)" << endl;
+             os << "==> " << (*i)->getName() << " " << cnt++ << " ("
+                << lines.size() << " lines):" << endl;
              for (auto j=lines.cbegin(); j!=lines.cend(); ++j)
                  os << **j << endl;
         }
@@ -138,8 +162,65 @@ Line *Line::getLine(FILE *fp)
     ln->_prev_or_boundary = getTextLine(fp);
     ln->_filename         = getTextLine(fp);
     ln->_content          = getTextLine(fp);
+    ln->_lineno           = Line::incrLineCounter();
+
+    // Remove newline
+    if (ln->_content.size())
+      ln->_content.pop_back();
 
     return ln;
+}
+
+size_t Line::findCommentBlockBegin(string str, size_t pos)
+{
+    bool in_string = false;
+    bool in_comment = false;
+    char prev = '\0';
+
+    for (auto i=str.begin()+pos; i!=str.end(); ++i) {
+        char c = *i;
+        if (c == '"')  {
+          in_string ^= in_string;
+          in_comment = false;
+        }
+        else if (!in_string && (c == '/') && (prev == '/'))
+          in_comment = true;
+        else if (!in_string && (c == '*') && (prev == '/'))
+          in_comment = true;
+        
+        if (in_comment)
+            return i - str.begin();
+        prev = c;
+    }
+
+    return string::npos;
+}
+
+size_t Line::findCommentBlockEnd(string str, size_t pos)
+{
+    bool in_string = false;
+    char prev = '\0';
+
+    for (auto i=str.begin()+pos; i!=str.end(); ++i) {
+        char c = *i;
+        if (c == '"')
+          in_string ^= in_string;
+        else if (!in_string && (c == '/') && (prev == '*'))
+          return i - str.begin();
+        prev = c;
+    }
+
+    return string::npos;
+}
+
+size_t Line::findCommentBlockEnd(LinesItr &itr)
+{
+    return Line::findCommentBlockEnd((*itr)->_content, 0);
+}
+
+size_t Line::findCommentBlockBegin(LinesItr &itr)
+{
+    return Line::findCommentBlockBegin((*itr)->_content, 0);
 }
 
 // Start of a comment block
@@ -147,12 +228,14 @@ bool Line::hasUnterminatedComment(LinesItr &itr)
 {
     string content = (*itr)->_content;
     bool in_comment = false;
-    size_t pos;
+    size_t pos = 0;
 
-    while ((pos = content.findCommentBlockBegin(pos)) != string::npos) {
+    while ((pos = findCommentBlockBegin(content, pos)) != string::npos) {
         in_comment = true;
-        if ((pos = content.findCommentBlockEnd(pos)))
+        if ((pos = Line::findCommentBlockEnd(content, pos)) != string::npos)
           in_comment = false;
+        if (pos == string::npos)
+          break;
     }
 
     return in_comment;
@@ -161,28 +244,9 @@ bool Line::hasUnterminatedComment(LinesItr &itr)
 // Just spaces
 bool Line::isBlank(LinesItr &itr)
 {
-    for (auto i=itr->_content.cbegin(); i!=itr->_content.cend(); ++i)
+    for (auto i=(*itr)->_content.cbegin(); i!=(*itr)->_content.cend(); ++i)
       if (!isspace(*i))
         return false;
-
-    return true;
-}
-
-// Return true if no code exists in this line
-bool Line::justComment(LinesItr &itr)
-{
-    string content = (*itr)->_content;
-
-    size_t pos = 0;
-    while ((pos = content.find_first_not_of(" \n\t\r"), pos) != string::npos) {
-        auto begin = findCommentBegin(content.cbegin() + pos);
-        if (begin == pos) {
-            pos = findCommentEnd(content.cbegin() + pos);
-            pos += 2; // Skip */ (two chars)
-        }
-        else
-          return false;
-    }
 
     return true;
 }
@@ -193,24 +257,27 @@ Block *TranslationFile::createBlock(LinesItr &itr)
 {
     Block *block = NULL;
 
-    if (isBlank(itr)) {
+    if (Line::isBlank(itr)) {
+        // While we are reading blank lines...
         block = new BlankBlock();
-        while (isBlank(itr)) {
-            block->push_back(*itr);
+        while (*itr && Line::isBlank(itr)) {
+            block->addLine(*itr);
             ++itr;
         }
     }
-    else if (hasUnterminatedComment(itr)) {
+    else if (Line::hasUnterminatedComment(itr)) {
+        // While we are in a comment block...
         block = new CommentBlock();
-        while (!findCommentBlockEnd(itr)) {
-            block->push_back(*itr);
+        while (*itr && Line::findCommentBlockEnd(itr) != string::npos) {
+            block->addLine(*itr);
             ++itr;
         }
     }
     else {
+        // While we do not find a comment block...
         block = new CodeBlock();
-        while (!findCommentBlockBegin(itr)) {
-            block->push_back(*itr);
+        while (*itr && Line::findCommentBlockBegin(itr) == string::npos) {
+            block->addLine(*itr);
             ++itr;
         }
     } 
@@ -239,13 +306,8 @@ void TranslationFile::parse(ifstream &fs)
     while (Line *line = Line::getLine(fp))
       lines.push_back(line);
 
-#ifdef DEBUG
-    for (auto i=lines.begin(); i!=lines.end(); ++i)
-      cout << **i;
-#endif
-
     // File has been read in, now put the lines into blocks
-    for (auto i=lines.begin(); i!=lines.end(); ++i) {
+    for (auto i=lines.begin(); *i && i!=lines.end(); ++i) {
         Block *blk = createBlock(i);
         if (blk)
           this->_blocks.push_back(blk);

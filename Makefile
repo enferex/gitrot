@@ -11,5 +11,8 @@ all: $(APP)
 $(APP): $(CXXOBJS)
 	$(CXX) $^ -o $@
 
+test: $(APP)
+	./$(APP) stale.cc
+
 clean:
 	$(RM) $(CXXOBJS)
