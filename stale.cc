@@ -18,6 +18,7 @@ using std::vector;
 
 #define COMMENT_BLOCK_BEGIN "/*"
 #define COMMENT_BLOCK_END   "*/"
+#define BLAME               "git blame --line-porcelain "
 
 class Block;
 class Line;
@@ -33,6 +34,7 @@ public:
     static string getTextLine(FILE *fp);
     static Line *getLine(FILE *fp);
     static bool isBlank(LinesItr &itr);
+    static bool justComment(LinesItr &itr);
     static bool hasUnterminatedComment(LinesItr &itr);
     static size_t findCommentBlockBegin(string str, size_t pos);
     static size_t findCommentBlockBegin(LinesItr &itr);
@@ -148,21 +150,36 @@ Line *Line::getLine(FILE *fp)
     // <40-byte sha> <orig line number> <final line number> <lines in group>
     ln->_header = getTextLine(fp);
 
-    ln->_author      = getTextLine(fp);
-    ln->_author_mail = getTextLine(fp);
-    ln->_author_time = getTextLine(fp);
-    ln->_author_tz   = getTextLine(fp);
-    
+    // Previous getTextLine did the initial read, check file status.
+    if (feof(fp) || ferror(fp)) {
+        cerr << "Did not find any git blame information.  "
+                "Has this file been added to the repository?" << endl;
+        return NULL;
+    }
+
+    ln->_author        = getTextLine(fp);
+    ln->_author_mail   = getTextLine(fp);
+    ln->_author_time   = getTextLine(fp);
+    ln->_author_tz     = getTextLine(fp);
     ln->_commiter      = getTextLine(fp);
     ln->_commiter_mail = getTextLine(fp);
     ln->_commiter_time = getTextLine(fp);
     ln->_commiter_tz   = getTextLine(fp);
+    ln->_summary       = getTextLine(fp);
 
-    ln->_summary          = getTextLine(fp);
-    ln->_prev_or_boundary = getTextLine(fp);
-    ln->_filename         = getTextLine(fp);
-    ln->_content          = getTextLine(fp);
-    ln->_lineno           = Line::incrLineCounter();
+    // Handle the previous or boundary string if it is in place else it is the
+    // filename string.
+    string tmp = getTextLine(fp);
+    if (tmp[0] != 'f') // Not 'f'ilename
+    {
+        ln->_prev_or_boundary = tmp;
+        ln->_filename         = getTextLine(fp);
+    }
+    else
+      ln->_filename = tmp;
+
+    ln->_content = getTextLine(fp);
+    ln->_lineno  = Line::incrLineCounter();
 
     // Remove newline
     if (ln->_content.size())
@@ -251,6 +268,33 @@ bool Line::isBlank(LinesItr &itr)
     return true;
 }
 
+// Just a comment line
+bool Line::justComment(LinesItr &itr)
+{
+    char prev = '\0';
+
+    for (auto i=(*itr)->_content.cbegin(); i!=(*itr)->_content.cend(); ++i) {
+        if (isspace(*i))
+            continue;
+        else if (*i == '/' && prev == '/')
+            return true;
+        // Look for inline /* */ comments and nothing after
+        else if (*i == '*' && prev == '/') {
+            auto str  = (*itr)->_content;
+            auto end1 = str.find_last_of("/");
+            auto end2 = str.find_last_not_of("/ \n\t\r");
+            if (end2 != string::npos && end2 != string::npos && end2 > end1)
+              return false; // Non comment characters after '/'
+            else if (end1 != string::npos && (str.at(end1 - 1) == '*') && 
+                     (end2 == string::npos || end2 < end1))
+              return true;
+        }
+        prev = *i;
+    }
+
+    return false;
+}
+
 // Continusly read lines grouping based on
 // comment and code.
 Block *TranslationFile::createBlock(LinesItr &itr)
@@ -265,10 +309,19 @@ Block *TranslationFile::createBlock(LinesItr &itr)
             ++itr;
         }
     }
+    else if (Line::justComment(itr)) { 
+        // While we keep seeing inline "//" comments and no code
+        block = new CommentBlock();
+        while (*itr && Line::justComment(itr)) {
+            block->addLine(*itr);
+            ++itr;
+        }
+    }
     else if (Line::hasUnterminatedComment(itr)) {
         // While we are in a comment block...
         block = new CommentBlock();
-        while (*itr && Line::findCommentBlockEnd(itr) != string::npos) {
+        while (*itr && !Line::isBlank(itr) &&
+               Line::findCommentBlockEnd(itr) == string::npos) {
             block->addLine(*itr);
             ++itr;
         }
@@ -276,7 +329,8 @@ Block *TranslationFile::createBlock(LinesItr &itr)
     else {
         // While we do not find a comment block...
         block = new CodeBlock();
-        while (*itr && Line::findCommentBlockBegin(itr) == string::npos) {
+        while (*itr && !Line::isBlank(itr) &&
+               Line::findCommentBlockBegin(itr) == string::npos) {
             block->addLine(*itr);
             ++itr;
         }
@@ -296,10 +350,10 @@ void TranslationFile::parse(ifstream &fs)
         path = _fname.substr(0, pos);
         string file = _fname.substr(pos + 1);
         chdir(path.c_str());
-        fp = popen(("git blame --line-porcelain " + file).c_str(), "r");
+        fp = popen((BLAME + file).c_str(), "r");
     }
     else // No path, just use filename 
-      fp = popen(("git blame --line-porcelain " + _fname).c_str(), "r");
+      fp = popen((BLAME + _fname).c_str(), "r");
 
     // Now we have file handle, obtain one string per line
     Lines lines;
