@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <vector>
 #include <cerrno>
+#include <getopt.h>
 #include <cstdint>
 #include <cstring>
 using std::cerr;
@@ -88,19 +89,19 @@ typedef vector<Block *> Blocks;
 class BlankBlock : public Block
 {
 public:
-    BlankBlock() { _name = "Blank Block"; }
+    BlankBlock(LinesItr &itr);
 };
 
 class CommentBlock : public Block
 {
 public:
-    CommentBlock() { _name = "Comment Block"; }
+    CommentBlock(LinesItr &itr);
 };
 
 class CodeBlock : public Block
 {
 public:
-    CodeBlock() { _name = "Code Block"; }
+    CodeBlock(LinesItr &itr);
 };
 
 class TranslationFile
@@ -295,46 +296,74 @@ bool Line::justComment(LinesItr &itr)
     return false;
 }
 
-// Continusly read lines grouping based on
-// comment and code.
-Block *TranslationFile::createBlock(LinesItr &itr)
+BlankBlock::BlankBlock(LinesItr &itr)
 {
-    Block *block = NULL;
-
-    if (Line::isBlank(itr)) {
-        // While we are reading blank lines...
-        block = new BlankBlock();
-        while (*itr && Line::isBlank(itr)) {
-            block->addLine(*itr);
-            ++itr;
-        }
+    _name = "Blank Block";
+    while (*itr && Line::isBlank(itr)) {
+        addLine(*itr);
+        ++itr;
     }
-    else if (Line::justComment(itr)) { 
+}
+
+CommentBlock::CommentBlock(LinesItr &itr)
+{
+    _name = "Comment Block";
+
+    if (Line::justComment(itr)) { 
         // While we keep seeing inline "//" comments and no code
-        block = new CommentBlock();
         while (*itr && Line::justComment(itr)) {
-            block->addLine(*itr);
+            addLine(*itr);
             ++itr;
         }
     }
     else if (Line::hasUnterminatedComment(itr)) {
         // While we are in a comment block...
-        block = new CommentBlock();
-        while (*itr && !Line::isBlank(itr) &&
-               Line::findCommentBlockEnd(itr) == string::npos) {
-            block->addLine(*itr);
-            ++itr;
+        size_t end = string::npos;
+        while (*itr && !Line::isBlank(itr)) {
+            end = Line::findCommentBlockEnd(itr);
+            if (end == string::npos) { // No end found, and in comment block
+                addLine(*itr);
+                ++itr;
+            } 
+            else if (Line::findCommentBlockEnd(itr) != string::npos) {
+                addLine(*itr);
+                ++itr;
+                break;
+            }
         }
     }
-    else {
-        // While we do not find a comment block...
-        block = new CodeBlock();
-        while (*itr && !Line::isBlank(itr) &&
-               Line::findCommentBlockBegin(itr) == string::npos) {
-            block->addLine(*itr);
-            ++itr;
-        }
-    } 
+}
+
+CodeBlock::CodeBlock(LinesItr &itr)
+{
+    _name = "Code Block";
+
+    // While we do not find a comment block...
+    while (*itr && !Line::isBlank(itr) &&
+        Line::findCommentBlockBegin(itr) == string::npos) {
+        addLine(*itr);
+        ++itr;
+    }
+}
+
+// Continusly read lines grouping based on
+// comment and code.
+Block *TranslationFile::createBlock(LinesItr &itr)
+{
+    Block *block = NULL;
+    const LinesItr orig = itr;
+
+    if (Line::isBlank(itr))
+      block = new BlankBlock(itr);
+    else if (Line::justComment(itr) ||  Line::hasUnterminatedComment(itr))
+      block = new CommentBlock(itr);
+    else
+      block = new CodeBlock(itr);
+
+    // If the orig iter is not the current iter, then we iterated one past
+    // to fail in a while condition.
+    if (orig != itr)
+      --itr;
 
     return block;
 }
@@ -384,19 +413,46 @@ TranslationFile::TranslationFile(const char *fname)
       parse(fs);
 }
 
+static void usage(const char *execname)
+{
+    cout << "Usage: " << execname << " [-h] [-r <num>] [FILE ...]" << endl
+         << "  -r <num>: Range in 'num' days between code and comment " << endl
+         << "            block modification times to which the comment " << endl
+         << "            is considered  stale." << endl
+         << "  -v:       Verbose output." << endl
+         << "  -h:       This help message." << endl
+         << "  FILE:     File path to a git committed file to analyize."
+         << endl;
+}
+
 int main(int argc, char **argv)
 {
+    int opt;
     vector<TranslationFile> files;
 
-    for (int i=1; i<argc; ++i) {
+    int range = 7;
+    bool verbose = false;
+    while ((opt=getopt(argc, argv, "vr:h")) != -1) {
+        switch (opt) {
+        case 'v': verbose = true; break;
+        case 'r': range = atoi(optarg); break;
+        case 'h': usage(argv[0]); exit(EXIT_SUCCESS); break;
+        default:
+            cerr << "Invalid option: " << argv[optind] << endl;
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    cout << "Using range: " << range << endl;
+
+    for (int i=optind; i<argc; ++i) {
         TranslationFile tf(argv[i]);
         files.push_back(tf);
     }
 
-#ifdef DEBUG
-    for_each(files.cbegin(), files.cend(),
-             [](TranslationFile t) { cout << t << endl; });
-#endif
+    if (verbose)
+      for_each(files.cbegin(), files.cend(),
+               [](TranslationFile t) { cout << t << endl; });
 
     return 0;
 }
