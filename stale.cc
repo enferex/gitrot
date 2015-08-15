@@ -108,12 +108,25 @@ class TranslationFile
 {
 public:
     TranslationFile(const char *fname);
-    static Block *createBlock(LinesItr &itr);
+    void createBlock(LinesItr &itr);
+    const string getName() const { return _fname; }
+
+    // Counters (for stats)
+    size_t nLines() const { return _n_lines; }
+    size_t nCodeBlocks() const { return _n_code_blocks; }
+    size_t nBlankBlocks() const { return _n_blank_blocks; }
+    size_t nCommentBlocks() const { return _n_comment_blocks; }
 
 private:
     void parse(ifstream &fs);
     string _fname;
     Blocks _blocks;
+
+    // Stats
+    size_t _n_lines;
+    size_t _n_code_blocks;
+    size_t _n_blank_blocks;
+    size_t _n_comment_blocks;
 
     friend ostream &operator<<(ostream &os, const TranslationFile tf) { 
         os << "***** " << tf._fname << " *****" << endl;
@@ -348,24 +361,33 @@ CodeBlock::CodeBlock(LinesItr &itr)
 
 // Continusly read lines grouping based on
 // comment and code.
-Block *TranslationFile::createBlock(LinesItr &itr)
+void TranslationFile::createBlock(LinesItr &itr)
 {
     Block *block = NULL;
     const LinesItr orig = itr;
 
-    if (Line::isBlank(itr))
-      block = new BlankBlock(itr);
-    else if (Line::justComment(itr) ||  Line::hasUnterminatedComment(itr))
-      block = new CommentBlock(itr);
-    else
-      block = new CodeBlock(itr);
+    if (Line::isBlank(itr)) {
+        if ((block = new BlankBlock(itr)))
+          ++_n_blank_blocks;
+    }
+    else if (Line::justComment(itr) ||  Line::hasUnterminatedComment(itr)) {
+        if ((block = new CommentBlock(itr)))
+          ++_n_comment_blocks;
+    }
+    else {
+        if ((block = new CodeBlock(itr)))
+          ++_n_code_blocks;
+    }
 
     // If the orig iter is not the current iter, then we iterated one past
     // to fail in a while condition.
     if (orig != itr)
       --itr;
 
-    return block;
+    if (block)
+      _n_lines += block->getLines().size();
+
+    _blocks.push_back(block);
 }
 
 void TranslationFile::parse(ifstream &fs)
@@ -397,20 +419,18 @@ void TranslationFile::parse(ifstream &fs)
     }
 
     // File has been read in, now put the lines into blocks
-    for (auto i=lines.begin(); *i && i!=lines.end(); ++i) {
-        Block *blk = createBlock(i);
-        if (blk)
-          this->_blocks.push_back(blk);
-    }
+    for (auto i=lines.begin(); *i && i!=lines.end(); ++i)
+        this->createBlock(i);
 
     pclose(fp);
 }
 
 TranslationFile::TranslationFile(const char *fname)
 {
-    _fname = fname;
-
+    // Initialize members
     cout << "Initializing " << fname << endl;
+    _fname = fname;
+    _n_lines = _n_code_blocks = _n_blank_blocks =  _n_comment_blocks = 0;
 
     ifstream fs(fname);
     if (!fs.good())
@@ -427,6 +447,7 @@ static void usage(const char *execname)
          << "            block modification times to which the comment " << endl
          << "            is considered  stale." << endl
          << "  -v:       Verbose output." << endl
+         << "  -s:       Stats output." << endl
          << "  -h:       This help message." << endl
          << "  FILE:     File path to a git committed file to analyize."
          << endl;
@@ -438,10 +459,11 @@ int main(int argc, char **argv)
     vector<TranslationFile> files;
 
     int range = 7;
-    bool verbose = false;
-    while ((opt=getopt(argc, argv, "vr:h")) != -1) {
+    bool verbose = false, stats = false;
+    while ((opt=getopt(argc, argv, "vsr:h")) != -1) {
         switch (opt) {
         case 'v': verbose = true; break;
+        case 's': stats = true; break;
         case 'r': range = atoi(optarg); break;
         case 'h': usage(argv[0]); exit(EXIT_SUCCESS); break;
         default:
@@ -458,6 +480,20 @@ int main(int argc, char **argv)
     }
 
     if (verbose)
+      for_each(files.cbegin(), files.cend(),
+               [](TranslationFile t) { cout << t << endl; });
+
+    if (stats) {
+        cout << "Total Files: " << files.size() << endl;
+        for_each(files.cbegin(), files.cend(),
+                 [](TranslationFile t) { 
+                      cout << t.getName() << endl
+                           << "\tBlankBlocks   " << t.nBlankBlocks() << endl
+                           << "\tCodeBlocks    " << t.nCodeBlocks() << endl
+                           << "\tCommentBlocks " << t.nCommentBlocks() << endl
+                           << "\tLines         " << t.nLines() << endl;         
+                 });
+    }
       for_each(files.cbegin(), files.cend(),
                [](TranslationFile t) { cout << t << endl; });
 

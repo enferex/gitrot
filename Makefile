@@ -12,7 +12,7 @@ $(APP): $(CXXOBJS)
 	$(CXX) $^ -o $@
 
 test: $(APP)
-	./$(APP) test.c
+	./$(APP) test.c -s
 
 clean:
 	$(RM) $(CXXOBJS)
