@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #include <cerrno>
 #include <getopt.h>
@@ -14,6 +15,7 @@ using std::endl;
 using std::for_each;
 using std::ifstream;
 using std::ostream;
+using std::pair;
 using std::string;
 using std::vector;
 
@@ -26,10 +28,19 @@ class Line;
 typedef vector<Line *> Lines;
 typedef Lines::iterator LinesItr;
 
+enum block_type_e {
+    UNKNOWN_BLOCK,
+    COMMENT_BLOCK,
+    CODE_BLOCK,
+    BLANK_BLOCK,
+    N_BLOCK_TYPES // Always last
+};
+
 class Line
 {
 public:
     const string getContent() const { return _content; }
+    unsigned getLineNum() const { return _lineno; }
 
     // Parsing utils
     static string getTextLine(FILE *fp);
@@ -70,6 +81,11 @@ private:
 // Global keeping track of line numbers
 unsigned Line::_all_line_count = 0;
 
+class Block;
+typedef vector<Block *> Blocks;
+typedef Blocks::iterator BlocksItr;
+typedef pair<const Block*, const Block*> BlockPair;
+
 class Block
 {
 public:
@@ -77,14 +93,19 @@ public:
     const char *getName() const { return _name; }
     const Lines &getLines() const { return _lines; }
     void addLine(Line *line) { _lines.push_back(line); }
+    block_type_e getType() const { return _type; }
+    unsigned getFirstLineNum() const { 
+        return _lines.size() ? _lines[0]->getLineNum() : 0;
+    }
+    static unsigned getRangeDifference(const Block *first, const Block *second);
 
 protected:
     const char *_name;
+    block_type_e _type;
 
 private:
     Lines _lines;
 };
-typedef vector<Block *> Blocks;
 
 class BlankBlock : public Block
 {
@@ -110,6 +131,8 @@ public:
     TranslationFile(const char *fname);
     void createBlock(LinesItr &itr);
     const string getName() const { return _fname; }
+    const Blocks &getBlocks() const { return _blocks; }
+    BlockPair nextCommentCode(BlocksItr &itr, unsigned range) const;
 
     // Counters (for stats)
     size_t nLines() const { return _n_lines; }
@@ -312,6 +335,7 @@ bool Line::justComment(LinesItr &itr)
 BlankBlock::BlankBlock(LinesItr &itr)
 {
     _name = "Blank Block";
+    _type = BLANK_BLOCK;
     while (*itr && Line::isBlank(itr)) {
         addLine(*itr);
         ++itr;
@@ -321,6 +345,7 @@ BlankBlock::BlankBlock(LinesItr &itr)
 CommentBlock::CommentBlock(LinesItr &itr)
 {
     _name = "Comment Block";
+    _type = COMMENT_BLOCK;
 
     if (Line::justComment(itr)) { 
         // While we keep seeing inline "//" comments and no code
@@ -350,6 +375,7 @@ CommentBlock::CommentBlock(LinesItr &itr)
 CodeBlock::CodeBlock(LinesItr &itr)
 {
     _name = "Code Block";
+    _type = CODE_BLOCK;
 
     // While we do not find a comment block...
     while (*itr && !Line::isBlank(itr) &&
@@ -442,15 +468,44 @@ TranslationFile::TranslationFile(const char *fname)
 
 static void usage(const char *execname)
 {
-    cout << "Usage: " << execname << " [-h] [-r <num>] [FILE ...]" << endl
+    cout << "Usage: " << execname << " [-s] [-v] [-h] [-r <num>] [FILE ...]" << endl
          << "  -r <num>: Range in 'num' days between code and comment " << endl
          << "            block modification times to which the comment " << endl
          << "            is considered  stale." << endl
-         << "  -v:       Verbose output." << endl
          << "  -s:       Stats output." << endl
+         << "  -v:       Verbose output." << endl
          << "  -h:       This help message." << endl
          << "  FILE:     File path to a git committed file to analyize."
          << endl;
+}
+
+unsigned Block::getRangeDifference(const Block *first, const Block *second)
+{
+    return 0;
+}
+
+BlockPair TranslationFile::nextCommentCode(BlocksItr &itr, unsigned range) const
+{
+    BlockPair pr = std::make_pair<const Block*, const Block *>(NULL, NULL);
+
+    for (auto b=itr; b!=this->_blocks.end(); ++b) {
+        if ((*b)->getType() == COMMENT_BLOCK) {
+            pr.first = *b;
+            break;
+        }
+    }
+
+    if (!pr.first)
+        return pr;
+    
+    for (auto b=itr; b!=this->_blocks.end(); ++b) {
+        if ((*b)->getType() == CODE_BLOCK) {
+            pr.second = *b;
+            break;
+        }
+    }
+
+    return pr;
 }
 
 int main(int argc, char **argv)
@@ -458,7 +513,7 @@ int main(int argc, char **argv)
     int opt;
     vector<TranslationFile> files;
 
-    int range = 7;
+    unsigned range = 0;
     bool verbose = false, stats = false;
     while ((opt=getopt(argc, argv, "vsr:h")) != -1) {
         switch (opt) {
@@ -472,9 +527,28 @@ int main(int argc, char **argv)
         }
     }
 
+    // Parse files
     for (int i=optind; i<argc; ++i) {
         TranslationFile tf(argv[i]);
         files.push_back(tf);
+    }
+
+    // Do any work... 
+    if (range > 0) {
+        for (auto f=files.cbegin(); f!=files.cend(); ++f) {
+            const TranslationFile tf = *f;
+            Blocks blks = tf.getBlocks();
+            for (BlocksItr b = blks.begin(); b!=blks.end(); ++b) {
+                BlockPair pr = tf.nextCommentCode(b, range);
+                if (!pr.first || !pr.second)
+                  break;
+                auto days = Block::getRangeDifference(pr.first, pr.second);
+                cout << "== " << tf.getName()
+                     << " == Offending Range (" << days << " Days)"
+                     << " (Lines " << pr.first->getFirstLineNum() << " to " 
+                     << pr.second->getFirstLineNum() << endl;
+            }
+        }
     }
 
     if (verbose)
