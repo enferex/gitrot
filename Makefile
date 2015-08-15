@@ -1,5 +1,5 @@
 CXX=g++
-CXXFLAGS=-g3 -Wall -std=c++11 -DDEBUG -pedantic
+CXXFLAGS=-g3 -Wall -std=c++11 -pedantic
 CXXOBJS=stale.o
 APP=stale
 

@@ -472,8 +472,6 @@ int main(int argc, char **argv)
         }
     }
 
-    cout << "Using range: " << range << endl;
-
     for (int i=optind; i<argc; ++i) {
         TranslationFile tf(argv[i]);
         files.push_back(tf);
@@ -494,8 +492,6 @@ int main(int argc, char **argv)
                            << "\tLines         " << t.nLines() << endl;         
                  });
     }
-      for_each(files.cbegin(), files.cend(),
-               [](TranslationFile t) { cout << t << endl; });
 
     return 0;
 }
