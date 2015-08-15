@@ -143,18 +143,18 @@ string Line::getTextLine(FILE *fp)
 // Get one line (made up from multiple lines of git blame
 Line *Line::getLine(FILE *fp)
 {
-    if (feof(fp) || ferror(fp))
-      return NULL;
-
     Line *ln = new Line();
 
     // <40-byte sha> <orig line number> <final line number> <lines in group>
     ln->_header = getTextLine(fp);
 
     // Previous getTextLine did the initial read, check file status.
-    if (feof(fp) || ferror(fp)) {
-        cerr << "Did not find any git blame information.  "
-                "Has this file been added to the repository?" << endl;
+    if (feof(fp) && !ferror(fp)) {
+        delete ln;
+        return NULL;
+    }
+    else if (ferror(fp)) {
+        cerr << "Error reading git blame information." << endl;
         return NULL;
     }
 
@@ -388,6 +388,13 @@ void TranslationFile::parse(ifstream &fs)
     Lines lines;
     while (Line *line = Line::getLine(fp))
       lines.push_back(line);
+
+    if (lines.size() == 0) {
+        cerr << "Did not find any git blame information." << endl
+             << "Has this file been committed to your git repository?"
+             << endl;
+        return;
+    }
 
     // File has been read in, now put the lines into blocks
     for (auto i=lines.begin(); *i && i!=lines.end(); ++i) {
