@@ -41,6 +41,7 @@ class Line
 public:
     const string getContent() const { return _content; }
     unsigned getLineNum() const { return _lineno; }
+    unsigned getAuthorTime() const { return 0; }
 
     // Parsing utils
     static string getTextLine(FILE *fp);
@@ -86,18 +87,23 @@ typedef vector<Block *> Blocks;
 typedef Blocks::iterator BlocksItr;
 typedef pair<const Block*, const Block*> BlockPair;
 
+static int block_ids; // Useful for debugging
 class Block
 {
 public:
-    Block() { _name = "Unknown Block"; }
-    const char *getName() const { return _name; }
-    const Lines &getLines() const { return _lines; }
+    Block() : _id(++block_ids), _name("Unknown Block") {;}
+
     void addLine(Line *line) { _lines.push_back(line); }
+    unsigned getMostRecentlyUpdated() const;
+    const char *getName() const { return _name; }
     block_type_e getType() const { return _type; }
+    const Lines &getLines() const { return _lines; }
     unsigned getFirstLineNum() const { 
         return _lines.size() ? _lines[0]->getLineNum() : 0;
     }
     static unsigned getRangeDifference(const Block *first, const Block *second);
+
+    int _id;
 
 protected:
     const char *_name;
@@ -132,7 +138,8 @@ public:
     void createBlock(LinesItr &itr);
     const string getName() const { return _fname; }
     const Blocks &getBlocks() const { return _blocks; }
-    BlockPair nextCommentCode(BlocksItr &itr, unsigned range) const;
+    BlockPair nextCommentCode(
+        BlocksItr &itr, const BlocksItr &end, unsigned range) const;
 
     // Counters (for stats)
     size_t nLines() const { return _n_lines; }
@@ -484,28 +491,56 @@ unsigned Block::getRangeDifference(const Block *first, const Block *second)
     return 0;
 }
 
-BlockPair TranslationFile::nextCommentCode(BlocksItr &itr, unsigned range) const
+// Return the timestamp for the most recently updated line in this block
+unsigned Block::getMostRecentlyUpdated() const
+{
+    const Line *recent = NULL;
+    for (auto ll=_lines.cbegin(); ll!=_lines.cend(); ++ll) {
+        if (!recent)
+            recent = *ll;
+        else if ((*ll)->getAuthorTime() > recent->getAuthorTime())
+            recent = *ll;
+    }
+    return recent->getAuthorTime();
+}
+
+BlockPair TranslationFile::nextCommentCode(
+    BlocksItr       &itr, 
+    const BlocksItr &end,
+    unsigned range) const
 {
     BlockPair pr = std::make_pair<const Block*, const Block *>(NULL, NULL);
 
-    for (auto b=itr; b!=this->_blocks.end(); ++b) {
-        if ((*b)->getType() == COMMENT_BLOCK) {
-            pr.first = *b;
-            break;
-        }
-    }
-
-    if (!pr.first)
+    if (itr == end)
         return pr;
-    
-    for (auto b=itr; b!=this->_blocks.end(); ++b) {
-        if ((*b)->getType() == CODE_BLOCK) {
-            pr.second = *b;
+
+    for ( ; itr!=end; ++itr) {
+        if ((*itr)->getType() == COMMENT_BLOCK) {
+            pr.first = *itr;
             break;
         }
     }
 
-    return pr;
+    if (!pr.first || itr == end)
+        return pr;
+
+    for ( ; itr!=end; ++itr) {
+        if ((*itr)->getType() == CODE_BLOCK) {
+            pr.second = *itr;
+            break;
+        }
+    }
+
+    if (itr == end)
+      return pr;
+
+    // Are these two blocks within range? Else recurse and look furthur
+    auto range_start = pr.first->getMostRecentlyUpdated();
+    auto range_end = pr.second->getMostRecentlyUpdated();
+    if ((range_end - range_start) >= range)
+      return pr;
+    else
+      return nextCommentCode(++itr, end, range);
 }
 
 int main(int argc, char **argv)
@@ -538,8 +573,10 @@ int main(int argc, char **argv)
         for (auto f=files.cbegin(); f!=files.cend(); ++f) {
             const TranslationFile tf = *f;
             Blocks blks = tf.getBlocks();
-            for (BlocksItr b = blks.begin(); b!=blks.end(); ++b) {
-                BlockPair pr = tf.nextCommentCode(b, range);
+
+            const BlocksItr end = blks.end();
+            for (BlocksItr b = blks.begin(); b!=end; ++b) {
+                BlockPair pr = tf.nextCommentCode(b, end, range);
                 if (!pr.first || !pr.second)
                   break;
                 auto days = Block::getRangeDifference(pr.first, pr.second);
