@@ -171,6 +171,7 @@ private:
         return os;
     }
 };
+typedef vector<TranslationFile> TranslationFiles;
 
 string Line::getTextLine(FILE *fp)
 {
@@ -543,10 +544,35 @@ BlockPair TranslationFile::nextCommentCode(
       return nextCommentCode(++itr, end, range);
 }
 
+static Blocks find_ranges(const TranslationFiles &files, unsigned range)
+{
+    Blocks in_range;
+
+    for (auto f=files.cbegin(); f!=files.cend(); ++f) {
+        const TranslationFile tf = *f;
+        Blocks blks = tf.getBlocks();
+
+        const BlocksItr end = blks.end();
+        for (BlocksItr b = blks.begin(); b!=end; ++b) {
+            BlockPair pr = tf.nextCommentCode(b, end, range);
+            if (!pr.first || !pr.second)
+              break;
+            auto days = Block::getRangeDifference(pr.first, pr.second);
+            cout << "== " << tf.getName()
+                 << " == Offending Range (" << days << " Days)"
+                 << " (Lines " << pr.first->getFirstLineNum() << " to " 
+                 << pr.second->getFirstLineNum() << endl;
+        }
+    }
+
+    return in_range;
+
+}
+
 int main(int argc, char **argv)
 {
     int opt;
-    vector<TranslationFile> files;
+    TranslationFiles files;
 
     unsigned range = 0;
     bool verbose = false, stats = false;
@@ -570,22 +596,9 @@ int main(int argc, char **argv)
 
     // Do any work... 
     if (range > 0) {
-        for (auto f=files.cbegin(); f!=files.cend(); ++f) {
-            const TranslationFile tf = *f;
-            Blocks blks = tf.getBlocks();
-
-            const BlocksItr end = blks.end();
-            for (BlocksItr b = blks.begin(); b!=end; ++b) {
-                BlockPair pr = tf.nextCommentCode(b, end, range);
-                if (!pr.first || !pr.second)
-                  break;
-                auto days = Block::getRangeDifference(pr.first, pr.second);
-                cout << "== " << tf.getName()
-                     << " == Offending Range (" << days << " Days)"
-                     << " (Lines " << pr.first->getFirstLineNum() << " to " 
-                     << pr.second->getFirstLineNum() << endl;
-            }
-        }
+        auto in_range = find_ranges(files, range);
+        cout << "Found " << in_range.size() << " stale block pairs exceeding "
+             << range << " days:" << endl;
     }
 
     if (verbose)
