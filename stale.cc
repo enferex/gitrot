@@ -41,7 +41,7 @@ class Line
 public:
     const string getContent() const { return _content; }
     unsigned getLineNum() const { return _lineno; }
-    unsigned getAuthorTime() const { return 0; }
+    uint64_t getAuthorTime() const;
 
     // Parsing utils
     static string getTextLine(FILE *fp);
@@ -86,6 +86,7 @@ class Block;
 typedef vector<Block *> Blocks;
 typedef Blocks::iterator BlocksItr;
 typedef pair<const Block*, const Block*> BlockPair;
+typedef vector<BlockPair> BlockPairs;
 
 static int block_ids; // Useful for debugging
 class Block
@@ -172,6 +173,12 @@ private:
     }
 };
 typedef vector<TranslationFile> TranslationFiles;
+
+// Return author time in unix-timestamp seconds
+uint64_t Line::getAuthorTime() const
+{
+    return std::stoull(_author_time, NULL);
+}
 
 string Line::getTextLine(FILE *fp)
 {
@@ -487,9 +494,12 @@ static void usage(const char *execname)
          << endl;
 }
 
+// Returns days
 unsigned Block::getRangeDifference(const Block *first, const Block *second)
 {
-    return 0;
+    auto a = first->getMostRecentlyUpdated();
+    auto b = first->getMostRecentlyUpdated();
+    return std::abs(a - b) / (60 * 60 * 24); // Seconds to days
 }
 
 // Return the timestamp for the most recently updated line in this block
@@ -536,17 +546,16 @@ BlockPair TranslationFile::nextCommentCode(
       return pr;
 
     // Are these two blocks within range? Else recurse and look furthur
-    auto range_start = pr.first->getMostRecentlyUpdated();
-    auto range_end = pr.second->getMostRecentlyUpdated();
-    if ((range_end - range_start) >= range)
+    auto days = Block::getRangeDifference(pr.first, pr.second);
+    if (days >= range)
       return pr;
     else
       return nextCommentCode(++itr, end, range);
 }
 
-static Blocks find_ranges(const TranslationFiles &files, unsigned range)
+static BlockPairs find_ranges(const TranslationFiles &files, unsigned range)
 {
-    Blocks in_range;
+    BlockPairs in_range;
 
     for (auto f=files.cbegin(); f!=files.cend(); ++f) {
         const TranslationFile tf = *f;
@@ -599,6 +608,14 @@ int main(int argc, char **argv)
         auto in_range = find_ranges(files, range);
         cout << "Found " << in_range.size() << " stale block pairs exceeding "
              << range << " days:" << endl;
+        for (auto r=in_range.begin(); r!=in_range.end(); ++r) {
+            auto first = (*r).first;
+            auto second = (*r).second;
+            auto days = Block::getRangeDifference(first, second);
+            cout << "Comment Block " << first->_id  << " Last Edited "
+                 << "Code Block " << second->_id << " Last Edited " 
+                 << "(Diff " << days << " days)" << endl;
+        }
     }
 
     if (verbose)
