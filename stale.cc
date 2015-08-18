@@ -44,7 +44,7 @@ public:
     uint64_t getAuthorTime() const;
 
     // Parsing utils
-    static string getTextLine(FILE *fp);
+    static string getTextLine(FILE *fp, char skip_to='\0');
     static Line *getLine(FILE *fp);
     static bool isBlank(LinesItr &itr);
     static bool justComment(LinesItr &itr);
@@ -95,7 +95,7 @@ public:
     Block() : _id(++block_ids), _name("Unknown Block") {;}
 
     void addLine(Line *line) { _lines.push_back(line); }
-    unsigned getMostRecentlyUpdated() const;
+    int64_t getMostRecentlyUpdated() const;
     const char *getName() const { return _name; }
     block_type_e getType() const { return _type; }
     const Lines &getLines() const { return _lines; }
@@ -180,7 +180,7 @@ uint64_t Line::getAuthorTime() const
     return std::stoull(_author_time, NULL);
 }
 
-string Line::getTextLine(FILE *fp)
+string Line::getTextLine(FILE *fp, char skip_to)
 {
     char c = '\0';
     string str;
@@ -188,7 +188,10 @@ string Line::getTextLine(FILE *fp)
       c = fgetc(fp);
       str += c;
     }
-    return str.size() ? str : "";
+    if (skip_to && str.find_first_of(skip_to) != string::npos)
+        return str.substr(str.find_first_of(skip_to)+ 1);
+    else
+      return str;
 }
 
 // Get one line (made up from multiple lines of git blame
@@ -211,7 +214,7 @@ Line *Line::getLine(FILE *fp)
 
     ln->_author        = getTextLine(fp);
     ln->_author_mail   = getTextLine(fp);
-    ln->_author_time   = getTextLine(fp);
+    ln->_author_time   = getTextLine(fp, ' ');
     ln->_author_tz     = getTextLine(fp);
     ln->_commiter      = getTextLine(fp);
     ln->_commiter_mail = getTextLine(fp);
@@ -469,7 +472,6 @@ void TranslationFile::parse(ifstream &fs)
 TranslationFile::TranslationFile(const char *fname)
 {
     // Initialize members
-    cout << "Initializing " << fname << endl;
     _fname = fname;
     _n_lines = _n_code_blocks = _n_blank_blocks =  _n_comment_blocks = 0;
 
@@ -498,12 +500,12 @@ static void usage(const char *execname)
 unsigned Block::getRangeDifference(const Block *first, const Block *second)
 {
     auto a = first->getMostRecentlyUpdated();
-    auto b = first->getMostRecentlyUpdated();
-    return std::abs(a - b) / (60 * 60 * 24); // Seconds to days
+    auto b = second->getMostRecentlyUpdated();
+    return std::abs(b - a) / (60 * 60 * 24); // Seconds to days
 }
 
 // Return the timestamp for the most recently updated line in this block
-unsigned Block::getMostRecentlyUpdated() const
+int64_t Block::getMostRecentlyUpdated() const
 {
     const Line *recent = NULL;
     for (auto ll=_lines.cbegin(); ll!=_lines.cend(); ++ll) {
@@ -553,25 +555,17 @@ BlockPair TranslationFile::nextCommentCode(
       return nextCommentCode(++itr, end, range);
 }
 
-static BlockPairs find_ranges(const TranslationFiles &files, unsigned range)
+static BlockPairs find_ranges(const TranslationFile &file, unsigned range)
 {
     BlockPairs in_range;
+    Blocks blks = file.getBlocks();
+    const BlocksItr end = blks.end();
 
-    for (auto f=files.cbegin(); f!=files.cend(); ++f) {
-        const TranslationFile tf = *f;
-        Blocks blks = tf.getBlocks();
-
-        const BlocksItr end = blks.end();
-        for (BlocksItr b = blks.begin(); b!=end; ++b) {
-            BlockPair pr = tf.nextCommentCode(b, end, range);
-            if (!pr.first || !pr.second)
-              break;
-            auto days = Block::getRangeDifference(pr.first, pr.second);
-            cout << "== " << tf.getName()
-                 << " == Offending Range (" << days << " Days)"
-                 << " (Lines " << pr.first->getFirstLineNum() << " to " 
-                 << pr.second->getFirstLineNum() << endl;
-        }
+    for (BlocksItr b = blks.begin(); b!=end; ++b) {
+        BlockPair pr = file.nextCommentCode(b, end, range);
+        if (!pr.first || !pr.second)
+          break;
+        in_range.push_back(pr);
     }
 
     return in_range;
@@ -583,7 +577,7 @@ int main(int argc, char **argv)
     int opt;
     TranslationFiles files;
 
-    unsigned range = 0;
+    int range = 0;
     bool verbose = false, stats = false;
     while ((opt=getopt(argc, argv, "vsr:h")) != -1) {
         switch (opt) {
@@ -605,16 +599,22 @@ int main(int argc, char **argv)
 
     // Do any work... 
     if (range > 0) {
-        auto in_range = find_ranges(files, range);
-        cout << "Found " << in_range.size() << " stale block pairs exceeding "
-             << range << " days:" << endl;
-        for (auto r=in_range.begin(); r!=in_range.end(); ++r) {
-            auto first = (*r).first;
-            auto second = (*r).second;
-            auto days = Block::getRangeDifference(first, second);
-            cout << "Comment Block " << first->_id  << " Last Edited "
-                 << "Code Block " << second->_id << " Last Edited " 
-                 << "(Diff " << days << " days)" << endl;
+        for (auto tf=files.cbegin(); tf!=files.cend(); ++tf) {
+            auto in_range = find_ranges(*tf, range);
+            cout << "Found " << in_range.size() 
+                 << " stale block pairs exceeding "
+                 << range << " days:" << endl;
+            for (auto r=in_range.begin(); r!=in_range.end(); ++r) {
+                auto first = (*r).first;
+                auto second = (*r).second;
+                auto days = Block::getRangeDifference(first, second);
+                cout << "==> " << (*tf).getName()
+                     << ": Stale Range (" << days << " Days)"
+                     << " (Lines " << first->getFirstLineNum() << " to " 
+                     << second->getFirstLineNum() << ") "
+                     << "(Blocks " << first->_id << ", " << second->_id << ")"
+                     << endl;
+            }
         }
     }
 
