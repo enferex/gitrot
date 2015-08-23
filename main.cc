@@ -56,7 +56,7 @@ public:
     static unsigned incrLineCounter(void) { return ++Line::_all_line_count; }
 
 private:
-    // git help blame 
+    // See `git help blame'
     string _header;
     string _author;
     string _author_mail;
