@@ -599,7 +599,7 @@ int main(int argc, char **argv)
     int opt;
     TranslationFiles files;
 
-    int range = 0;
+    int range = 7;
     bool verbose = false, stats = false;
     while ((opt=getopt(argc, argv, "vsr:h")) != -1) {
         switch (opt) {
@@ -611,6 +611,11 @@ int main(int argc, char **argv)
             cerr << "Invalid option: " << argv[optind] << endl;
             exit(EXIT_FAILURE);
         }
+    }
+
+    if (argc == 1) {
+        usage(argv[0]);
+        return EXIT_SUCCESS;
     }
 
     // Parse files
